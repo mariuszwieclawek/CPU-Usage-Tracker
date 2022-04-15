@@ -1,63 +1,106 @@
-#include<stdlib.h>
-#include<string.h>
-#include<unistd.h>
-#include<stdio.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
+#define MaxItems 5 // Maximum items a producer can produce or a consumer can consume
+#define BufferSize 5 // Size of the buffer
+#define StringSize 50 // Size of the string
+
+sem_t readdata; 
+sem_t analyz; 
+
+pthread_mutex_t mutex;
+
+int in = 0;
+int out = 0;
+char readstring[BufferSize][StringSize];
 
 struct CPU_Usage{
+    char ReadFirstStr[100];
+    char ReadSecStr[100];
     long double Total;
     long double Idle;
     long double PrevTotal;
     long double PrevIdle;
     long double CPUPercentageUsage;
-};
+}CPU;
 
-void Calculate_CPU_Usage(struct CPU_Usage *cpu, int times, int lag){
-	char buffer[100];
-	const char d[2] = " ";
-	char* token;
-	int i = 0;
- 	
-    for(int j=1; j<=times; j++){
-        FILE* fp = fopen("/proc/stat","r");
-        i = 0;
-        fgets(buffer,100,fp);
-        fclose(fp);
-        token = strtok(buffer,d);
-        cpu->Total = 0;
-        while(token!=NULL){         
-            token = strtok(NULL,d);
-            if(token!=NULL){
-                cpu->Total += atoi(token);
-                if(i==3)
-                    cpu->Idle = atoi(token);  
-                i++;
-            }
-        }
+void *Read(void *arg)
+{   
+    sem_wait(&readdata);
+    pthread_mutex_lock(&mutex);
 
-        if(j==times){
-            cpu->CPUPercentageUsage = 100 - (cpu->Idle-cpu->PrevIdle)*100.0/(cpu->Total-cpu->PrevTotal);
-            break;
-        }
-        cpu->PrevIdle = cpu->Idle;
-        cpu->PrevTotal = cpu->Total;
-    
-        sleep(lag);
-    }
+    FILE* fp = fopen("/proc/stat","r");
+    fgets(readstring[in],StringSize,fp);
+    fclose(fp);
+    printf("Producer: Insert Item %s at %d\n",readstring[in],in);
+    in = (in+1)%BufferSize;
+
+    pthread_mutex_unlock(&mutex);
+    sem_post(&analyz);
 }
 
- 
-int main(int argc,char* argv[]){
-    struct CPU_Usage CPU;
-    //Calculate_CPU_Usage(&CPU,2,1);
+void *Analyze(void *arg){  
 
-    /*printf("IDLE:%Lf\n",CPU.Idle);
-    printf("PREVIDLE:%Lf\n",CPU.PrevIdle);
-    printf("PREVTOTAL:%Lf\n",CPU.PrevTotal);
-    printf("TOTAL:%Lf\n",CPU.PrevIdle);*/
-    while(1){
-        Calculate_CPU_Usage(&CPU,2,1);
-        printf("Busy for : %Lf %% of the time.\n", CPU.CPUPercentageUsage);	
+    sem_wait(&analyz);
+    pthread_mutex_lock(&mutex);
+
+    char *item = readstring[out];
+    const char d[2] = " ";
+    char* token;
+    int i = 0;
+
+    token = strtok(item,d);
+    CPU.Total = 0;  
+    while(token!=NULL){      
+        token = strtok(NULL,d);
+        if(token!=NULL){
+            CPU.Total += atoi(token);
+            if(i==3)
+                CPU.Idle = atoi(token);  
+            i++;
+        }
     }
-	return 0;
+            
+    CPU.CPUPercentageUsage = 100 - (CPU.Idle-CPU.PrevIdle)*100.0/(CPU.Total-CPU.PrevTotal);
+    printf("CPU Usage: %Lf %%\n",CPU.CPUPercentageUsage);            
+    CPU.PrevIdle = CPU.Idle;
+    CPU.PrevTotal = CPU.Total;
+
+    printf("Consumer: Remove Item %s from %d\n",item, out);
+    out = (out+1)%BufferSize;
+
+    pthread_mutex_unlock(&mutex);
+    sem_post(&readdata);
+    
+}
+
+
+
+int main()
+{   
+    pthread_t Reader,Analyzer;
+    pthread_mutex_init(&mutex, NULL);
+    sem_init(&readdata,0,BufferSize);
+    sem_init(&analyz,0,0);
+    
+    while (1)
+    {
+        pthread_create(&Reader, NULL, Read, NULL); 
+        pthread_create(&Analyzer, NULL, Analyze, NULL);
+    
+        pthread_join(Reader, NULL); 
+        pthread_join(Analyzer, NULL);
+        
+        sleep(1);
+    }
+    
+    pthread_mutex_destroy(&mutex);
+    sem_destroy(&readdata);
+    sem_destroy(&analyz);
+
+    return 0;
 }
